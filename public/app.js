@@ -12,6 +12,7 @@ const connectionStatus = document.querySelector('#connectionStatus');
 const nextFormat = document.querySelector('#nextFormat');
 
 const logStorageKey = 'ambro-x-bot-log';
+const maxTweetLength = 279;
 let tweets = loadLog();
 let currentFormat = null;
 
@@ -31,7 +32,7 @@ function setLoading(isLoading, label = 'Working') {
   document.body.classList.toggle('is-loading', isLoading);
   createTweetButton.disabled = isLoading;
   editTweetButton.disabled = isLoading;
-  postTweetButton.disabled = isLoading;
+  postTweetButton.disabled = isLoading || tweetPreview.value.length > maxTweetLength;
   connectionStatus.textContent = isLoading ? label : 'OpenAI ready';
 }
 
@@ -43,8 +44,9 @@ function showToast(message) {
 
 function updateCharacterCount() {
   const length = tweetPreview.value.length;
-  characterCount.textContent = `${length} chars`;
-  characterCount.classList.toggle('is-over', length > 280);
+  characterCount.textContent = `${length} / 279`;
+  characterCount.classList.toggle('is-over', length > maxTweetLength);
+  postTweetButton.disabled = length > maxTweetLength || document.body.classList.contains('is-loading');
 }
 
 function renderLog() {
@@ -188,7 +190,7 @@ postTweetButton.addEventListener('click', async () => {
     });
 
     addLogEntry(payload.tweet, payload.status);
-    showToast(payload.status === 'thread posted' ? 'Thread posted.' : 'Tweet posted.');
+    showToast('Tweet posted.');
   } catch (error) {
     showToast(error.message);
   } finally {

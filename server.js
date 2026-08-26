@@ -38,6 +38,7 @@ const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
 const rotationRef = doc(db, 'botState', 'tweetRotation');
 const localRotationPath = join(__dirname, '.data', 'rotation.json');
+const maxTweetLength = 279;
 
 const contentTypes = {
   '.css': 'text/css; charset=utf-8',
@@ -83,7 +84,7 @@ const tweetFormats = [
     id: 'deep-dive',
     name: 'The Deep Dive',
     guidance:
-      'Write a longer post or short thread explaining something fascinating: historical context, apparent contradictions, symbolism, translations, or a whole passage. Use 2-4 tight numbered tweets only if the idea needs a thread.',
+      'Explain something fascinating in one compact post: historical context, apparent contradictions, symbolism, translations, or a whole passage.',
     example:
       'Why did Jesus curse a fig tree for not having figs? It sounds bizarre until you understand what the tree represented...',
   },
@@ -102,7 +103,7 @@ Every post must follow the requested format exactly. Keep the voice faithful, wa
 intellectually honest, and grounded. Avoid cringe marketing, fake virality, vague inspiration,
 emoji overload, and hashtag stuffing. The format is private planning metadata only.
 Never mention, label, title, introduce, or explain the format. Return only the public-facing
-tweet or thread text.`;
+tweet text. The final tweet must be fewer than 280 characters.`;
 
 const qualityCheckPrompt = `You are the final editor for Ambro social posts.
 Rewrite only when needed. The final output must:
@@ -112,7 +113,8 @@ Rewrite only when needed. The final output must:
 - avoid clout-chasing, engagement bait, hashtags, and emoji
 - avoid theological overclaiming or careless Bible context
 - contain no private format labels, category names, headings, or prefaces
-- return only the final public-facing tweet or thread text`;
+- be strictly under 280 characters
+- return only the final public-facing tweet text`;
 
 const bannedFormatLabels = [
   'The Sharp Take',
@@ -280,6 +282,46 @@ function stripFormatLeakage(text) {
     .trim();
 }
 
+function assertTweetLength(tweet) {
+  if (tweet.length > maxTweetLength) {
+    throw Object.assign(new Error(`Tweet is ${tweet.length} characters. It must be fewer than 280.`), {
+      code: 400,
+    });
+  }
+}
+
+async function shortenTweet(tweet) {
+  const response = await client.responses.create({
+    model: process.env.OPENAI_MODEL || 'gpt-5',
+    instructions: `Rewrite the post so it is fewer than 280 characters.
+Preserve the main idea, make it sound human, remove filler, and return only the final tweet text.
+Do not add a heading, format name, hashtags, emoji, or explanation.`,
+    input: `Current length: ${tweet.length}
+
+Post:
+${tweet}`,
+  });
+
+  const shortened = stripFormatLeakage(response.output_text?.trim() || '');
+
+  if (!shortened) {
+    throw new Error('OpenAI returned an empty shortened tweet.');
+  }
+
+  return shortened;
+}
+
+async function enforceTweetLength(tweet) {
+  let finalTweet = stripFormatLeakage(tweet);
+
+  for (let attempt = 0; attempt < 2 && finalTweet.length > maxTweetLength; attempt += 1) {
+    finalTweet = await shortenTweet(finalTweet);
+  }
+
+  assertTweetLength(finalTweet);
+  return finalTweet;
+}
+
 async function qualityCheckTweet({ tweet, format = null, editInstruction = '' }) {
   const formatContext = format
     ? `The private target structure was: ${format.guidance}`
@@ -295,7 +337,7 @@ ${editContext}
 Draft:
 ${tweet}
 
-Return the final cleaned post only.`,
+Return the final cleaned post only. It must be fewer than 280 characters.`,
   });
 
   const checked = response.output_text?.trim();
@@ -304,7 +346,7 @@ Return the final cleaned post only.`,
     throw new Error('OpenAI returned an empty checked tweet.');
   }
 
-  return stripFormatLeakage(checked);
+  return enforceTweetLength(checked);
 }
 
 async function generateTweet({ context = '', currentTweet = '', editInstruction = '', format = null }) {
@@ -340,7 +382,7 @@ ${context || 'No direction provided.'}`;
     input,
   });
 
-  const text = stripFormatLeakage(response.output_text?.trim() || '');
+  const text = await enforceTweetLength(response.output_text?.trim() || '');
 
   if (!text) {
     throw new Error('OpenAI returned an empty tweet.');
@@ -356,25 +398,10 @@ function getTweetSegments(tweet) {
     return [];
   }
 
-  const numberedSegments = text
-    .split(/\n(?=\s*\d+[.)]\s+)/)
-    .map((segment) => segment.replace(/^\s*\d+[.)]\s+/, '').trim())
-    .filter(Boolean);
-
-  if (numberedSegments.length > 1) {
-    return numberedSegments;
-  }
-
   return [text];
 }
 
 async function postToTwitter(tweet) {
-  if (!twitterClient) {
-    throw new Error(
-      'Missing Twitter credentials. Add TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, and TWITTER_ACCESS_SECRET to .env.',
-    );
-  }
-
   const segments = getTweetSegments(tweet);
 
   if (!segments.length) {
@@ -382,9 +409,13 @@ async function postToTwitter(tweet) {
   }
 
   for (const segment of segments) {
-    if (segment.length > 280) {
-      throw new Error('One tweet segment is over 280 characters. Edit it shorter before posting.');
-    }
+    assertTweetLength(segment);
+  }
+
+  if (!twitterClient) {
+    throw new Error(
+      'Missing Twitter credentials. Add TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, and TWITTER_ACCESS_SECRET to .env.',
+    );
   }
 
   const postedTweets = [];
@@ -487,11 +518,12 @@ async function handleApi(request, response) {
         return;
       }
 
+      assertTweetLength(tweet);
       const postedTweets = await postToTwitter(tweet);
 
       sendJson(response, 200, {
         id: postedTweets[0].id,
-        status: postedTweets.length > 1 ? 'thread posted' : 'posted',
+        status: 'posted',
         tweet,
         postedTweets,
         postedAt: new Date().toISOString(),
