@@ -9,6 +9,7 @@ import {
   getCurrentFormat,
   getErrorStatus,
   getPublicErrorMessage,
+  getScheduledPostStatus,
   getTwitterAccount,
   postToTwitter,
   recordPostedTweet,
@@ -66,6 +67,11 @@ async function handleApi(request, response) {
           name: account.name,
         },
       });
+      return;
+    }
+
+    if (request.method === 'GET' && request.url === '/api/schedule-status') {
+      sendJson(response, 200, await getScheduledPostStatus());
       return;
     }
 

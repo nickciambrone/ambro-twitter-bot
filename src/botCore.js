@@ -498,11 +498,12 @@ function getLocalDayParts(date = new Date()) {
   };
 }
 
-function createDailySlots(dateKey) {
+function createDailySlots(dateKey, minimumMinute = schedulerStartMinute) {
   const availableSlots = [];
+  const firstSlotMinute = Math.max(schedulerStartMinute, minimumMinute);
 
   for (
-    let minute = schedulerStartMinute;
+    let minute = firstSlotMinute;
     minute <= schedulerEndMinute;
     minute += schedulerWindowMinutes
   ) {
@@ -526,6 +527,92 @@ function formatSlot(minute) {
   return `${String(hour).padStart(2, '0')}:${mins}`;
 }
 
+function formatSlotList(slots = []) {
+  return slots.map((slot) => ({
+    minute: slot,
+    label: formatSlot(slot),
+  }));
+}
+
+export async function getScheduledPostStatus(now = new Date()) {
+  const { dateKey, minuteOfDay } = getLocalDayParts(now);
+  const snapshot = await getDoc(schedulerRef);
+  const data = snapshot.exists() ? snapshot.data() : {};
+  const isToday = data.dateKey === dateKey;
+  const slots =
+    isToday && Array.isArray(data.slots)
+      ? data.slots
+      : createDailySlots(dateKey, minuteOfDay + schedulerWindowMinutes);
+  const postedSlots = isToday && Array.isArray(data.postedSlots) ? data.postedSlots : [];
+  const failedSlots = isToday && Array.isArray(data.failedSlots) ? data.failedSlots : [];
+  const unavailableSlots = new Set([...postedSlots, ...failedSlots]);
+
+  return {
+    dateKey,
+    timeZone: schedulerTimeZone,
+    minuteOfDay,
+    slots: formatSlotList(slots),
+    postedSlots: formatSlotList(postedSlots),
+    failedSlots: formatSlotList(failedSlots),
+    nextSlot: formatSlotList([slots.find((slot) => slot > minuteOfDay && !unavailableSlots.has(slot))])
+      .filter((slot) => Number.isInteger(slot.minute))[0] || null,
+    storedInFirebase: isToday,
+  };
+}
+
+export async function initializeTodaySchedule(now = new Date()) {
+  const { dateKey, minuteOfDay } = getLocalDayParts(now);
+
+  return runTransaction(db, async (transaction) => {
+    const snapshot = await transaction.get(schedulerRef);
+    const data = snapshot.exists() ? snapshot.data() : {};
+
+    if (data.dateKey === dateKey && Array.isArray(data.slots)) {
+      const postedSlots = Array.isArray(data.postedSlots) ? data.postedSlots : [];
+      const failedSlots = Array.isArray(data.failedSlots) ? data.failedSlots : [];
+      const unavailableSlots = new Set([...postedSlots, ...failedSlots]);
+
+      return {
+        dateKey,
+        timeZone: schedulerTimeZone,
+        minuteOfDay,
+        slots: formatSlotList(data.slots),
+        postedSlots: formatSlotList(postedSlots),
+        failedSlots: formatSlotList(failedSlots),
+        nextSlot:
+          formatSlotList([data.slots.find((slot) => slot > minuteOfDay && !unavailableSlots.has(slot))])
+            .filter((slot) => Number.isInteger(slot.minute))[0] || null,
+        storedInFirebase: true,
+      };
+    }
+
+    const slots = createDailySlots(dateKey, minuteOfDay + schedulerWindowMinutes);
+
+    transaction.set(
+      schedulerRef,
+      {
+        dateKey,
+        slots,
+        postedSlots: [],
+        failedSlots: [],
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+
+    return {
+      dateKey,
+      timeZone: schedulerTimeZone,
+      minuteOfDay,
+      slots: formatSlotList(slots),
+      postedSlots: [],
+      failedSlots: [],
+      nextSlot: formatSlotList([slots.find((slot) => slot > minuteOfDay)])[0] || null,
+      storedInFirebase: true,
+    };
+  });
+}
+
 export async function reserveDueScheduledPost(now = new Date()) {
   const { dateKey, minuteOfDay } = getLocalDayParts(now);
 
@@ -533,7 +620,10 @@ export async function reserveDueScheduledPost(now = new Date()) {
     const snapshot = await transaction.get(schedulerRef);
     const data = snapshot.exists() ? snapshot.data() : {};
     const isToday = data.dateKey === dateKey;
-    const slots = isToday && Array.isArray(data.slots) ? data.slots : createDailySlots(dateKey);
+    const slots =
+      isToday && Array.isArray(data.slots)
+        ? data.slots
+        : createDailySlots(dateKey, minuteOfDay + schedulerWindowMinutes);
     const postedSlots = isToday && Array.isArray(data.postedSlots) ? data.postedSlots : [];
     const failedSlots = isToday && Array.isArray(data.failedSlots) ? data.failedSlots : [];
     const unavailableSlots = new Set([...postedSlots, ...failedSlots]);
