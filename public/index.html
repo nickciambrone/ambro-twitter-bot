@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ambro X Bot</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="workspace" aria-label="Tweet composer">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Ambro X Bot</p>
+            <h1>Draft the next Ambro tweet.</h1>
+          </div>
+          <div class="topbar-status">
+            <div class="status-pill" id="connectionStatus">OpenAI ready</div>
+            <div class="format-pill" id="nextFormat">Next format loading</div>
+          </div>
+        </header>
+
+        <div class="composer-grid">
+          <section class="control-panel" aria-label="Creation controls">
+            <label for="tweetContext">Direction</label>
+            <textarea
+              id="tweetContext"
+              rows="6"
+              placeholder="Optional: today’s vibe, feature, verse, feast day, launch note..."
+            ></textarea>
+            <button class="primary-action" id="createTweetButton" type="button">
+              Create Tweet
+            </button>
+          </section>
+
+          <section class="preview-panel" aria-label="Tweet preview">
+            <div class="preview-header">
+              <span>Preview</span>
+              <span id="characterCount">0 chars</span>
+            </div>
+            <textarea
+              id="tweetPreview"
+              class="tweet-preview"
+              placeholder="Your generated tweet will appear here."
+            ></textarea>
+            <div class="action-row">
+              <input
+                id="editInstruction"
+                type="text"
+                placeholder="Ask AI to edit it..."
+                aria-label="AI edit instruction"
+              />
+              <button class="secondary-action" id="editTweetButton" type="button">Edit with AI</button>
+              <button class="post-action" id="postTweetButton" type="button">Post Mock</button>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <aside class="log-panel" aria-label="Tweet log">
+        <div class="log-header">
+          <div>
+            <p class="eyebrow">Timeline</p>
+            <h2>Tweet log</h2>
+          </div>
+          <button class="ghost-action" id="clearLogButton" type="button">Clear</button>
+        </div>
+        <ol id="tweetLog" class="tweet-log"></ol>
+      </aside>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+    <script src="/app.js" type="module"></script>
+  </body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "name": "ambro-twitter-bot",
+  "version": "1.0.0",
+  "description": "Plain HTML/CSS/JS UI for drafting Ambro tweets with OpenAI.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "firebase": "^12.18.0",
+    "openai": "^4.85.4"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
