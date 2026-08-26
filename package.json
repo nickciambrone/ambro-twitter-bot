@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "post:scheduled": "node scripts/run-scheduled-post.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

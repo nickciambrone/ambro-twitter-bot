@@ -15,6 +15,7 @@ const logStorageKey = 'ambro-x-bot-log';
 const maxTweetLength = 279;
 let tweets = loadLog();
 let currentFormat = null;
+let currentTweetFormat = null;
 
 function loadLog() {
   try {
@@ -149,6 +150,7 @@ createTweetButton.addEventListener('click', async () => {
     });
 
     tweetPreview.value = tweet;
+    currentTweetFormat = format;
     updateCharacterCount();
     addLogEntry(tweet, 'drafted', format);
     setNextFormat(upcomingFormat);
@@ -187,6 +189,7 @@ postTweetButton.addEventListener('click', async () => {
   try {
     const payload = await postJson('/api/post-tweet', {
       tweet: tweetPreview.value.trim(),
+      format: currentTweetFormat,
     });
 
     addLogEntry(payload.tweet, payload.status);
