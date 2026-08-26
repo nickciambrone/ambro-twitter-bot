@@ -148,6 +148,10 @@ function getPublicErrorMessage(error) {
     return 'X rejected the request with 403 Forbidden. Make sure the app has Read and Write permissions.';
   }
 
+  if (error?.code === 402) {
+    return 'X returned 402 Payment Required. Your credentials are reaching X, but the developer app likely needs paid/eligible API access for posting.';
+  }
+
   if (error instanceof Error) {
     return error.message;
   }
