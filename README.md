@@ -17,4 +17,4 @@ Open `http://localhost:3000`.
 - The OpenAI key stays on the Node server. Do not put it in `public/app.js`.
 - Tweet format rotation is stored in Firestore at `botState/tweetRotation`.
 - If Firestore is disabled or unavailable, local dev falls back to `.data/rotation.json`.
-- Posting to X is mocked for now. The UI logs mocked posts locally in the browser.
+- Posting uses the X API through `twitter-api-v2`.

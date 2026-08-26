@@ -6,11 +6,25 @@ import { fileURLToPath } from 'node:url';
 import { initializeApp } from 'firebase/app';
 import { doc, getDoc, getFirestore, runTransaction, serverTimestamp } from 'firebase/firestore';
 import OpenAI from 'openai';
+import { TwitterApi } from 'twitter-api-v2';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = join(__dirname, 'public');
 const port = Number(process.env.PORT || 3000);
 const client = process.env.OPENAI_API_KEY ? new OpenAI() : null;
+const xCredentials = {
+  appKey: process.env.TWITTER_API_KEY || process.env.X_CONSUMER_KEY,
+  appSecret: process.env.TWITTER_API_SECRET || process.env.X_CONSUMER_SECRET,
+  accessToken: process.env.TWITTER_ACCESS_TOKEN || process.env.X_ACCESS_TOKEN,
+  accessSecret: process.env.TWITTER_ACCESS_SECRET || process.env.X_ACCESS_TOKEN_SECRET,
+};
+const twitterClient =
+  xCredentials.appKey &&
+  xCredentials.appSecret &&
+  xCredentials.accessToken &&
+  xCredentials.accessSecret
+    ? new TwitterApi(xCredentials).readWrite
+    : null;
 const firebaseConfig = {
   apiKey: process.env.FIREBASE_API_KEY || 'AIzaSyDn_as_wGlbCUFsVJ8R6SfnZxgyPEW2mUk',
   authDomain: process.env.FIREBASE_AUTH_DOMAIN || 'ambro-x-bot.firebaseapp.com',
@@ -117,6 +131,26 @@ const bannedFormatLabels = [
 function sendJson(response, status, payload) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   response.end(JSON.stringify(payload));
+}
+
+function getErrorStatus(error) {
+  return Number.isInteger(error?.code) && error.code >= 400 && error.code < 600 ? error.code : 500;
+}
+
+function getPublicErrorMessage(error) {
+  if (error?.code === 401) {
+    return 'X rejected the Twitter credentials with 401 Unauthorized. Check app permissions and regenerate the access token/secret.';
+  }
+
+  if (error?.code === 403) {
+    return 'X rejected the request with 403 Forbidden. Make sure the app has Read and Write permissions.';
+  }
+
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return 'Something went wrong.';
 }
 
 async function readJson(request) {
@@ -315,6 +349,75 @@ ${context || 'No direction provided.'}`;
   return qualityCheckTweet({ tweet: text, format, editInstruction });
 }
 
+function getTweetSegments(tweet) {
+  const text = tweet.trim();
+
+  if (!text) {
+    return [];
+  }
+
+  const numberedSegments = text
+    .split(/\n(?=\s*\d+[.)]\s+)/)
+    .map((segment) => segment.replace(/^\s*\d+[.)]\s+/, '').trim())
+    .filter(Boolean);
+
+  if (numberedSegments.length > 1) {
+    return numberedSegments;
+  }
+
+  return [text];
+}
+
+async function postToTwitter(tweet) {
+  if (!twitterClient) {
+    throw new Error(
+      'Missing Twitter credentials. Add TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, and TWITTER_ACCESS_SECRET to .env.',
+    );
+  }
+
+  const segments = getTweetSegments(tweet);
+
+  if (!segments.length) {
+    throw new Error('Nothing to post yet.');
+  }
+
+  for (const segment of segments) {
+    if (segment.length > 280) {
+      throw new Error('One tweet segment is over 280 characters. Edit it shorter before posting.');
+    }
+  }
+
+  const postedTweets = [];
+  let replyToTweetId = null;
+
+  for (const segment of segments) {
+    const payload = replyToTweetId
+      ? { text: segment, reply: { in_reply_to_tweet_id: replyToTweetId } }
+      : segment;
+    const response = await twitterClient.v2.tweet(payload);
+    const posted = response.data;
+
+    postedTweets.push({
+      id: posted.id,
+      text: posted.text,
+    });
+    replyToTweetId = posted.id;
+  }
+
+  return postedTweets;
+}
+
+async function getTwitterAccount() {
+  if (!twitterClient) {
+    throw new Error(
+      'Missing Twitter credentials. Add TWITTER_API_KEY, TWITTER_API_SECRET, TWITTER_ACCESS_TOKEN, and TWITTER_ACCESS_SECRET to .env.',
+    );
+  }
+
+  const me = await twitterClient.v2.me();
+  return me.data;
+}
+
 async function handleApi(request, response) {
   try {
     if (request.method === 'GET' && request.url === '/api/rotation') {
@@ -323,6 +426,19 @@ async function handleApi(request, response) {
         nextFormat: serializeFormat(format),
         formats: tweetFormats.map(serializeFormat),
         source,
+      });
+      return;
+    }
+
+    if (request.method === 'GET' && request.url === '/api/twitter-status') {
+      const account = await getTwitterAccount();
+      sendJson(response, 200, {
+        connected: true,
+        account: {
+          id: account.id,
+          username: account.username,
+          name: account.name,
+        },
       });
       return;
     }
@@ -371,10 +487,13 @@ async function handleApi(request, response) {
         return;
       }
 
+      const postedTweets = await postToTwitter(tweet);
+
       sendJson(response, 200, {
-        id: `mock-${Date.now()}`,
-        status: 'mocked',
+        id: postedTweets[0].id,
+        status: postedTweets.length > 1 ? 'thread posted' : 'posted',
         tweet,
+        postedTweets,
         postedAt: new Date().toISOString(),
       });
       return;
@@ -382,8 +501,8 @@ async function handleApi(request, response) {
 
     sendJson(response, 404, { error: 'API route not found.' });
   } catch (error) {
-    sendJson(response, 500, {
-      error: error instanceof Error ? error.message : 'Something went wrong.',
+    sendJson(response, getErrorStatus(error), {
+      error: getPublicErrorMessage(error),
     });
   }
 }

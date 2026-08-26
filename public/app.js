@@ -180,15 +180,15 @@ editTweetButton.addEventListener('click', async () => {
 });
 
 postTweetButton.addEventListener('click', async () => {
-  setLoading(true, 'Mock posting');
+  setLoading(true, 'Posting');
 
   try {
     const payload = await postJson('/api/post-tweet', {
       tweet: tweetPreview.value.trim(),
     });
 
-    addLogEntry(payload.tweet, 'mock posted');
-    showToast('Mock post logged.');
+    addLogEntry(payload.tweet, payload.status);
+    showToast(payload.status === 'thread posted' ? 'Thread posted.' : 'Tweet posted.');
   } catch (error) {
     showToast(error.message);
   } finally {

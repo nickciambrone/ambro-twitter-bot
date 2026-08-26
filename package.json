@@ -10,7 +10,8 @@
   "dependencies": {
     "dotenv": "^16.4.7",
     "firebase": "^12.18.0",
-    "openai": "^4.85.4"
+    "openai": "^4.85.4",
+    "twitter-api-v2": "^1.29.1"
   },
   "engines": {
     "node": ">=18"
