@@ -500,7 +500,9 @@ function getLocalDayParts(date = new Date()) {
 
 function createDailySlots(dateKey, minimumMinute = schedulerStartMinute) {
   const availableSlots = [];
-  const firstSlotMinute = Math.max(schedulerStartMinute, minimumMinute);
+  const earliestMinute = Math.max(schedulerStartMinute, minimumMinute);
+  const firstSlotMinute =
+    Math.ceil(earliestMinute / schedulerWindowMinutes) * schedulerWindowMinutes;
 
   for (
     let minute = firstSlotMinute;
