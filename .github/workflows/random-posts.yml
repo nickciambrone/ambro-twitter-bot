@@ -2,7 +2,7 @@ name: Random Ambro X Posts
 
 on:
   schedule:
-    - cron: "*/15 * * * *"
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
 
 concurrency:
@@ -44,3 +44,4 @@ jobs:
           FIREBASE_APP_ID: ${{ secrets.FIREBASE_APP_ID }}
           FIREBASE_MEASUREMENT_ID: ${{ secrets.FIREBASE_MEASUREMENT_ID }}
           SCHEDULER_TIME_ZONE: America/New_York
+          SCHEDULER_SLOT_OFFSET_MINUTE: 7

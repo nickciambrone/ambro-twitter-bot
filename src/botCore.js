@@ -25,6 +25,7 @@ const schedulerTimeZone = process.env.SCHEDULER_TIME_ZONE || 'America/New_York';
 const schedulerStartMinute = Number(process.env.SCHEDULER_START_MINUTE || 7 * 60);
 const schedulerEndMinute = Number(process.env.SCHEDULER_END_MINUTE || 23 * 60);
 const schedulerWindowMinutes = Number(process.env.SCHEDULER_WINDOW_MINUTES || 15);
+const schedulerSlotOffsetMinute = Number(process.env.SCHEDULER_SLOT_OFFSET_MINUTE || 7);
 
 const xCredentials = {
   appKey: process.env.TWITTER_API_KEY || process.env.X_CONSUMER_KEY,
@@ -501,8 +502,10 @@ function getLocalDayParts(date = new Date()) {
 function createDailySlots(dateKey, minimumMinute = schedulerStartMinute) {
   const availableSlots = [];
   const earliestMinute = Math.max(schedulerStartMinute, minimumMinute);
-  const firstSlotMinute =
-    Math.ceil(earliestMinute / schedulerWindowMinutes) * schedulerWindowMinutes;
+  const offset = schedulerSlotOffsetMinute % schedulerWindowMinutes;
+  const remainder = earliestMinute % schedulerWindowMinutes;
+  const minutesToNextSlot = (offset - remainder + schedulerWindowMinutes) % schedulerWindowMinutes;
+  const firstSlotMinute = earliestMinute + minutesToNextSlot;
 
   for (
     let minute = firstSlotMinute;
@@ -613,6 +616,34 @@ export async function initializeTodaySchedule(now = new Date()) {
       storedInFirebase: true,
     };
   });
+}
+
+export async function resetTodaySchedule(now = new Date()) {
+  const { dateKey, minuteOfDay } = getLocalDayParts(now);
+  const slots = createDailySlots(dateKey, minuteOfDay + schedulerWindowMinutes);
+
+  await setDoc(
+    schedulerRef,
+    {
+      dateKey,
+      slots,
+      postedSlots: [],
+      failedSlots: [],
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true },
+  );
+
+  return {
+    dateKey,
+    timeZone: schedulerTimeZone,
+    minuteOfDay,
+    slots: formatSlotList(slots),
+    postedSlots: [],
+    failedSlots: [],
+    nextSlot: formatSlotList([slots.find((slot) => slot > minuteOfDay)])[0] || null,
+    storedInFirebase: true,
+  };
 }
 
 export async function reserveDueScheduledPost(now = new Date()) {

@@ -22,7 +22,8 @@ Open `http://localhost:3000`.
 
 ## GitHub Automation
 
-The workflow in `.github/workflows/random-posts.yml` runs every 15 minutes. On the
+The workflow in `.github/workflows/random-posts.yml` runs every 15 minutes on
+offset minutes `:07`, `:22`, `:37`, and `:52`. On the
 first run of each day, it creates five random posting slots between 7:00 AM and
 11:00 PM America/New_York, stores them in Firebase, and posts only when a slot is
 due.
