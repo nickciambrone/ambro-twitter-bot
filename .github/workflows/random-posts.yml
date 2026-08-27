@@ -2,7 +2,7 @@ name: Random Ambro X Posts
 
 on:
   schedule:
-    - cron: "7,22,37,52 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 concurrency:
@@ -17,6 +17,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Show checkout commit
+        run: git log -1 --format='checked_out=%H committed_at=%cI subject=%s'
 
       - name: Setup Node
         uses: actions/setup-node@v4
