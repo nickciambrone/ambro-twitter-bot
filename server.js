@@ -4,17 +4,15 @@ import { extname, join, normalize } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   assertTweetLength,
-  createTweetFromRotation,
+  createDevotionalPostPackage,
   generateTweet,
-  getCurrentFormat,
   getErrorStatus,
   getPublicErrorMessage,
+  getRecentTweetLogs,
   getScheduledPostStatus,
   getTwitterAccount,
   postToTwitter,
   recordPostedTweet,
-  serializeFormat,
-  tweetFormats,
 } from './src/botCore.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -47,12 +45,9 @@ async function readJson(request) {
 
 async function handleApi(request, response) {
   try {
-    if (request.method === 'GET' && request.url === '/api/rotation') {
-      const { format, source } = await getCurrentFormat();
+    if (request.method === 'GET' && request.url === '/api/recent-posts') {
       sendJson(response, 200, {
-        nextFormat: serializeFormat(format),
-        formats: tweetFormats.map(serializeFormat),
-        source,
+        posts: await getRecentTweetLogs(10),
       });
       return;
     }
@@ -83,13 +78,18 @@ async function handleApi(request, response) {
     const body = await readJson(request);
 
     if (request.url === '/api/create-tweet') {
-      const result = await createTweetFromRotation(String(body.context || ''));
+      const result = await createDevotionalPostPackage(String(body.context || ''));
       sendJson(response, 200, {
-        tweet: result.tweet,
-        format: serializeFormat(result.format),
-        nextFormat: serializeFormat(result.nextFormat),
-        rotationSource: result.rotationSource,
-        rotationShifted: result.rotationShifted,
+        tweet: result.text,
+        text: result.text,
+        imageBase64: result.image.base64,
+        imageMimeType: result.image.mimeType,
+        imagePrompt: result.imagePrompt,
+        imageAlt: result.imageAlt,
+        imageSizeBytes: result.image.sizeBytes,
+        sourceType: result.sourceType,
+        theme: result.theme,
+        recentPostCount: result.recentPostCount,
       });
       return;
     }
@@ -110,18 +110,42 @@ async function handleApi(request, response) {
 
     if (request.url === '/api/post-tweet') {
       const tweet = String(body.tweet || '').trim();
+      const imageBase64 = String(body.imageBase64 || '').trim();
+      const imageMimeType = String(body.imageMimeType || 'image/jpeg').trim();
+      const imagePrompt = String(body.imagePrompt || '').trim();
+      const imageAlt = String(body.imageAlt || '').trim();
 
       if (!tweet) {
         sendJson(response, 400, { error: 'Nothing to post yet.' });
         return;
       }
 
+      if (!imageBase64) {
+        sendJson(response, 400, { error: 'Create an image before posting.' });
+        return;
+      }
+
       assertTweetLength(tweet);
-      const postedTweets = await postToTwitter(tweet);
+      const postedTweets = await postToTwitter({
+        text: tweet,
+        imageBase64,
+        imageMimeType,
+        imageAlt,
+      });
 
       await recordPostedTweet({
-        tweet,
-        format: body.format || null,
+        postPackage: {
+          text: tweet,
+          tweet,
+          imagePrompt,
+          imageAlt,
+          sourceType: body.sourceType || null,
+          theme: body.theme || null,
+          image: {
+            base64: imageBase64,
+            mimeType: imageMimeType,
+          },
+        },
         postedTweets,
         source: 'manual-ui',
       });

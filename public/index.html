@@ -12,11 +12,11 @@
         <header class="topbar">
           <div>
             <p class="eyebrow">Ambro X Bot</p>
-            <h1>Draft the next Ambro tweet.</h1>
+            <h1>Draft the next Ambro post.</h1>
           </div>
           <div class="topbar-status">
             <div class="status-pill" id="connectionStatus">OpenAI ready</div>
-            <div class="format-pill" id="nextFormat">Next format loading</div>
+            <div class="format-pill" id="nextFormat">Image post mode</div>
           </div>
         </header>
 
@@ -26,10 +26,10 @@
             <textarea
               id="tweetContext"
               rows="6"
-              placeholder="Optional: today’s vibe, feature, verse, feast day, launch note..."
+              placeholder="Optional: saint, feast day, mercy, temptation, Mary, the cross..."
             ></textarea>
             <button class="primary-action" id="createTweetButton" type="button">
-              Create Tweet
+              Create Post
             </button>
           </section>
 
@@ -38,11 +38,17 @@
               <span>Preview</span>
               <span id="characterCount">0 chars</span>
             </div>
-            <textarea
-              id="tweetPreview"
-              class="tweet-preview"
-              placeholder="Your generated tweet will appear here."
-            ></textarea>
+            <div class="post-preview-frame">
+              <textarea
+                id="tweetPreview"
+                class="tweet-preview"
+                placeholder="Your generated post will appear here."
+              ></textarea>
+              <div class="image-preview-shell">
+                <img id="imagePreview" class="image-preview" alt="" hidden />
+                <div id="imagePlaceholder" class="image-placeholder">Image preview</div>
+              </div>
+            </div>
             <div class="action-row">
               <input
                 id="editInstruction"

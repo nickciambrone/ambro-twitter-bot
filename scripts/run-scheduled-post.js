@@ -51,7 +51,8 @@ try {
       {
         status: 'posted',
         slot: reservation.slot,
-        format: result.format.name,
+        theme: result.theme,
+        sourceType: result.sourceType,
         tweetId: result.postedTweets[0].id,
         length: result.tweet.length,
       },

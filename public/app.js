@@ -4,6 +4,8 @@ const postTweetButton = document.querySelector('#postTweetButton');
 const clearLogButton = document.querySelector('#clearLogButton');
 const tweetContext = document.querySelector('#tweetContext');
 const tweetPreview = document.querySelector('#tweetPreview');
+const imagePreview = document.querySelector('#imagePreview');
+const imagePlaceholder = document.querySelector('#imagePlaceholder');
 const editInstruction = document.querySelector('#editInstruction');
 const characterCount = document.querySelector('#characterCount');
 const tweetLog = document.querySelector('#tweetLog');
@@ -14,8 +16,7 @@ const nextFormat = document.querySelector('#nextFormat');
 const logStorageKey = 'ambro-x-bot-log';
 const maxTweetLength = 279;
 let tweets = loadLog();
-let currentFormat = null;
-let currentTweetFormat = null;
+let currentPackage = null;
 
 function loadLog() {
   try {
@@ -26,14 +27,23 @@ function loadLog() {
 }
 
 function saveLog() {
-  localStorage.setItem(logStorageKey, JSON.stringify(tweets));
+  localStorage.setItem(localStorageKey(), JSON.stringify(tweets));
+}
+
+function localStorageKey() {
+  return logStorageKey;
+}
+
+function hasImage() {
+  return Boolean(currentPackage?.imageBase64);
 }
 
 function setLoading(isLoading, label = 'Working') {
   document.body.classList.toggle('is-loading', isLoading);
   createTweetButton.disabled = isLoading;
-  editTweetButton.disabled = isLoading;
-  postTweetButton.disabled = isLoading || tweetPreview.value.length > maxTweetLength;
+  editTweetButton.disabled = isLoading || !tweetPreview.value.trim();
+  postTweetButton.disabled =
+    isLoading || !tweetPreview.value.trim() || tweetPreview.value.length > maxTweetLength || !hasImage();
   connectionStatus.textContent = isLoading ? label : 'OpenAI ready';
 }
 
@@ -47,7 +57,26 @@ function updateCharacterCount() {
   const length = tweetPreview.value.length;
   characterCount.textContent = `${length} / 279`;
   characterCount.classList.toggle('is-over', length > maxTweetLength);
-  postTweetButton.disabled = length > maxTweetLength || document.body.classList.contains('is-loading');
+  postTweetButton.disabled =
+    length > maxTweetLength ||
+    !tweetPreview.value.trim() ||
+    !hasImage() ||
+    document.body.classList.contains('is-loading');
+  editTweetButton.disabled = !tweetPreview.value.trim() || document.body.classList.contains('is-loading');
+}
+
+function setImagePreview(postPackage) {
+  if (!postPackage?.imageBase64) {
+    imagePreview.hidden = true;
+    imagePreview.removeAttribute('src');
+    imagePlaceholder.hidden = false;
+    return;
+  }
+
+  imagePreview.src = `data:${postPackage.imageMimeType || 'image/jpeg'};base64,${postPackage.imageBase64}`;
+  imagePreview.alt = postPackage.imageAlt || 'Generated sacred artwork preview.';
+  imagePreview.hidden = false;
+  imagePlaceholder.hidden = true;
 }
 
 function renderLog() {
@@ -56,7 +85,7 @@ function renderLog() {
   if (!tweets.length) {
     const empty = document.createElement('li');
     empty.className = 'empty-log';
-    empty.textContent = 'No tweets yet.';
+    empty.textContent = 'No posts yet.';
     tweetLog.append(empty);
     return;
   }
@@ -67,8 +96,8 @@ function renderLog() {
 
     const meta = document.createElement('div');
     meta.className = 'log-meta';
-    const formatLabel = item.format?.name ? `${item.format.name} · ` : '';
-    meta.textContent = `${formatLabel}${item.status} · ${new Date(item.createdAt).toLocaleString([], {
+    const theme = item.theme ? `${item.theme} · ` : '';
+    meta.textContent = `${theme}${item.status} · ${new Date(item.createdAt).toLocaleString([], {
       month: 'short',
       day: 'numeric',
       hour: 'numeric',
@@ -110,28 +139,23 @@ async function getJson(url) {
   return payload;
 }
 
-function setNextFormat(format) {
-  currentFormat = format;
-  nextFormat.textContent = format?.name ? `Next: ${format.name}` : 'Next format unavailable';
-}
-
-async function refreshRotation() {
+async function refreshModeStatus() {
   try {
-    const payload = await getJson('/api/rotation');
-    setNextFormat(payload.nextFormat);
-  } catch (error) {
-    setNextFormat(null);
-    showToast(error.message);
+    const payload = await getJson('/api/recent-posts');
+    nextFormat.textContent = `Avoiding last ${payload.posts?.length || 0}`;
+  } catch {
+    nextFormat.textContent = 'Firebase log check';
   }
 }
 
-function addLogEntry(tweet, status, format = null) {
+function addLogEntry(postPackage, status) {
   tweets = [
     {
       id: crypto.randomUUID(),
-      tweet,
+      tweet: postPackage.tweet || postPackage.text,
       status,
-      format,
+      theme: postPackage.theme || '',
+      sourceType: postPackage.sourceType || '',
       createdAt: new Date().toISOString(),
     },
     ...tweets,
@@ -142,19 +166,20 @@ function addLogEntry(tweet, status, format = null) {
 }
 
 createTweetButton.addEventListener('click', async () => {
-  setLoading(true, currentFormat?.name ? `Creating: ${currentFormat.name}` : 'Creating tweet');
+  setLoading(true, 'Creating post and image');
 
   try {
-    const { tweet, format, nextFormat: upcomingFormat } = await postJson('/api/create-tweet', {
+    const postPackage = await postJson('/api/create-tweet', {
       context: tweetContext.value.trim(),
     });
 
-    tweetPreview.value = tweet;
-    currentTweetFormat = format;
+    currentPackage = postPackage;
+    tweetPreview.value = postPackage.tweet;
+    setImagePreview(postPackage);
     updateCharacterCount();
-    addLogEntry(tweet, 'drafted', format);
-    setNextFormat(upcomingFormat);
-    showToast(`${format.name} created.`);
+    addLogEntry(postPackage, 'drafted');
+    nextFormat.textContent = `Avoided last ${postPackage.recentPostCount}`;
+    showToast('Post package created.');
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -163,7 +188,7 @@ createTweetButton.addEventListener('click', async () => {
 });
 
 editTweetButton.addEventListener('click', async () => {
-  setLoading(true, 'Editing tweet');
+  setLoading(true, 'Editing post');
 
   try {
     const { tweet } = await postJson('/api/edit-tweet', {
@@ -172,10 +197,11 @@ editTweetButton.addEventListener('click', async () => {
     });
 
     tweetPreview.value = tweet;
+    currentPackage = currentPackage ? { ...currentPackage, tweet, text: tweet } : null;
     editInstruction.value = '';
     updateCharacterCount();
-    addLogEntry(tweet, 'ai edited');
-    showToast('Tweet updated.');
+    addLogEntry({ ...(currentPackage || {}), tweet }, 'ai edited');
+    showToast('Post updated.');
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -189,11 +215,17 @@ postTweetButton.addEventListener('click', async () => {
   try {
     const payload = await postJson('/api/post-tweet', {
       tweet: tweetPreview.value.trim(),
-      format: currentTweetFormat,
+      imageBase64: currentPackage?.imageBase64 || '',
+      imageMimeType: currentPackage?.imageMimeType || 'image/jpeg',
+      imagePrompt: currentPackage?.imagePrompt || '',
+      imageAlt: currentPackage?.imageAlt || '',
+      sourceType: currentPackage?.sourceType || '',
+      theme: currentPackage?.theme || '',
     });
 
-    addLogEntry(payload.tweet, payload.status);
-    showToast('Tweet posted.');
+    addLogEntry({ ...(currentPackage || {}), tweet: payload.tweet }, payload.status);
+    await refreshModeStatus();
+    showToast('Post sent to X.');
   } catch (error) {
     showToast(error.message);
   } finally {
@@ -205,11 +237,18 @@ clearLogButton.addEventListener('click', () => {
   tweets = [];
   saveLog();
   renderLog();
-  showToast('Log cleared.');
+  showToast('Local log cleared.');
 });
 
-tweetPreview.addEventListener('input', updateCharacterCount);
+tweetPreview.addEventListener('input', () => {
+  if (currentPackage) {
+    currentPackage = { ...currentPackage, tweet: tweetPreview.value, text: tweetPreview.value };
+  }
+
+  updateCharacterCount();
+});
 
 renderLog();
+setImagePreview(null);
 updateCharacterCount();
-refreshRotation();
+refreshModeStatus();

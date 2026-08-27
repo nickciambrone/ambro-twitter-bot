@@ -1,14 +1,16 @@
 import 'dotenv/config';
-import { randomInt } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { createHash, randomInt } from 'node:crypto';
 import { initializeApp } from 'firebase/app';
 import {
   arrayUnion,
+  collection,
   doc,
   getDoc,
+  getDocs,
   getFirestore,
+  limit,
+  orderBy,
+  query,
   runTransaction,
   serverTimestamp,
   setDoc,
@@ -16,16 +18,20 @@ import {
 import OpenAI from 'openai';
 import { TwitterApi } from 'twitter-api-v2';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const projectRoot = join(__dirname, '..');
 const client = process.env.OPENAI_API_KEY ? new OpenAI() : null;
 const maxTweetLength = 279;
-const postsPerDay = 5;
+const postsPerDay = Number(process.env.POSTS_PER_DAY || 5);
 const schedulerTimeZone = process.env.SCHEDULER_TIME_ZONE || 'America/New_York';
 const schedulerStartMinute = Number(process.env.SCHEDULER_START_MINUTE || 7 * 60);
 const schedulerEndMinute = Number(process.env.SCHEDULER_END_MINUTE || 23 * 60);
 const schedulerWindowMinutes = Number(process.env.SCHEDULER_WINDOW_MINUTES || 15);
 const schedulerSlotOffsetMinute = Number(process.env.SCHEDULER_SLOT_OFFSET_MINUTE || 7);
+const openaiTextModel = process.env.OPENAI_MODEL || 'gpt-5';
+const openaiImageModel = process.env.OPENAI_IMAGE_MODEL || 'gpt-image-1';
+const openaiImageSize = process.env.OPENAI_IMAGE_SIZE || '1024x1536';
+const openaiImageQuality = process.env.OPENAI_IMAGE_QUALITY || 'low';
+const openaiImageFormat = process.env.OPENAI_IMAGE_FORMAT || 'jpeg';
+const openaiImageCompression = Number(process.env.OPENAI_IMAGE_COMPRESSION || 82);
 
 const xCredentials = {
   appKey: process.env.TWITTER_API_KEY || process.env.X_CONSUMER_KEY,
@@ -54,79 +60,32 @@ const firebaseConfig = {
 
 const firebaseApp = initializeApp(firebaseConfig);
 const db = getFirestore(firebaseApp);
-const rotationRef = doc(db, 'botState', 'tweetRotation');
 const schedulerRef = doc(db, 'botState', 'postScheduler');
-const localRotationPath = join(projectRoot, '.data', 'rotation.json');
+const tweetLogCollection = collection(db, 'tweetLog');
 
-export const tweetFormats = [
-  {
-    id: 'sharp-take',
-    name: 'The Sharp Take',
-    guidance:
-      'One original Bible or Christian observation that makes the reader pause and think. It should feel precise, wise, and memorable.',
-    example:
-      "Sometimes faith isn't believing God will give you what you want. It's trusting Him when He doesn't.",
-  },
-  {
-    id: 'misunderstood-verse',
-    name: 'The Misunderstood Verse',
-    guidance:
-      'Quote or reference a commonly misunderstood verse, then explain what it actually means in context.',
-    example:
-      "'Judge not' does not mean Christians are forbidden from judging behavior. The rest of Matthew 7 makes that pretty clear.",
-  },
-  {
-    id: 'question',
-    name: 'The Question',
-    guidance:
-      'Ask a genuine theological or philosophical question designed to invite thoughtful replies.',
-    example: 'What teaching of Jesus is the hardest to actually live by?',
-  },
-  {
-    id: 'bible-life-connection',
-    name: 'The Bible -> Life Connection',
-    guidance:
-      'Take a biblical idea and connect it to anxiety, relationships, ambition, anger, discipline, forgiveness, or another real-life pressure.',
-    example:
-      "A lot of anxiety is experiencing tomorrow's suffering before tomorrow even exists. Matthew 6 addresses exactly this.",
-  },
-  {
-    id: 'deep-dive',
-    name: 'The Deep Dive',
-    guidance:
-      'Explain something fascinating in one compact post: historical context, apparent contradictions, symbolism, translations, or a whole passage.',
-    example:
-      'Why did Jesus curse a fig tree for not having figs? It sounds bizarre until you understand what the tree represented...',
-  },
-  {
-    id: 'ambro-promotion',
-    name: 'Ambro Promotion',
-    guidance:
-      'Directly or indirectly showcase Ambro and why someone should download it. Focus on a specific feature or problem rather than generic advertising.',
-    example:
-      "Reading the Bible isn't the hard part. Understanding what you're actually reading is. That's why I built Ambro.",
-  },
-];
+const devotionalSystemPrompt = `You create posts for Ambro, a Catholic prayer and Bible app.
+The public post must match this social format every time:
+- short devotional quote, prayer, or saint-style reflection
+- paired with a sacred artwork image
+- reverent, human, direct, and emotionally clear
+- no hashtags, no emoji, no engagement bait, no labels, no format names
+- fewer than 280 characters
 
-const tweetSystemPrompt = `You write polished tweets for Ambro, a Catholic prayer and Bible app.
-Every post must follow the requested format exactly. Keep the voice faithful, warm, modern,
-intellectually honest, and grounded. Avoid cringe marketing, fake virality, vague inspiration,
-emoji overload, and hashtag stuffing. The format is private planning metadata only.
-Never mention, label, title, introduce, or explain the format. Return only the public-facing
-tweet text. The final tweet must be fewer than 280 characters.`;
+Do not invent fake saint quotes or fake citations. If attribution is uncertain, make it an original
+prayer/reflection with no attribution. Return JSON only.`;
 
-const qualityCheckPrompt = `You are the final editor for Ambro social posts.
-Rewrite only when needed. The final output must:
-- sound like a thoughtful human wrote it, not a content template
-- be original, clean, concrete, and natural
-- avoid generic inspirational filler
-- avoid clout-chasing, engagement bait, hashtags, and emoji
-- avoid theological overclaiming or careless Bible context
-- contain no private format labels, category names, headings, or prefaces
-- be strictly under 280 characters
-- return only the final public-facing tweet text`;
+const devotionalCheckerPrompt = `You are the final editor for Ambro devotional image posts.
+Check the package for:
+- text is fewer than 280 characters
+- text sounds human, clean, reverent, and not templated
+- no private labels, headings, hashtags, emoji, or "format" language
+- no fake saint attribution or suspicious quote attribution
+- visibly different from the recent posts in theme, wording, saint/source, and image idea
+- image prompt has no text, captions, watermark, UI, logos, or modern app screenshots
 
-const bannedFormatLabels = [
+Return corrected JSON only.`;
+
+const bannedPostLanguage = [
   'The Sharp Take',
   'Sharp Take',
   'The Misunderstood Verse',
@@ -138,6 +97,7 @@ const bannedFormatLabels = [
   'The Deep Dive',
   'Deep Dive',
   'Ambro Promotion',
+  'format',
 ];
 
 export function getErrorStatus(error) {
@@ -164,114 +124,12 @@ export function getPublicErrorMessage(error) {
   return 'Something went wrong.';
 }
 
-function normalizeRotationIndex(value) {
-  return Number.isInteger(value) && value >= 0 ? value % tweetFormats.length : 0;
-}
+function cleanTweetText(text) {
+  let cleaned = String(text || '').trim();
 
-export function serializeFormat(format) {
-  return {
-    id: format.id,
-    name: format.name,
-    guidance: format.guidance,
-  };
-}
-
-export async function getCurrentFormat() {
-  try {
-    const snapshot = await getDoc(rotationRef);
-    const currentIndex = normalizeRotationIndex(snapshot.data()?.nextFormatIndex);
-    return {
-      index: currentIndex,
-      format: tweetFormats[currentIndex],
-      source: 'firebase',
-    };
-  } catch (error) {
-    const currentIndex = await getLocalRotationIndex();
-    console.warn(`Firebase rotation unavailable, using local fallback: ${error.message}`);
-    return {
-      index: currentIndex,
-      format: tweetFormats[currentIndex],
-      source: 'local fallback',
-    };
-  }
-}
-
-export async function advanceFormat(expectedIndex, generatedTweet) {
-  try {
-    const result = await runTransaction(db, async (transaction) => {
-      const snapshot = await transaction.get(rotationRef);
-      const currentIndex = normalizeRotationIndex(snapshot.data()?.nextFormatIndex);
-      const nextIndex = (currentIndex + 1) % tweetFormats.length;
-
-      transaction.set(
-        rotationRef,
-        {
-          nextFormatIndex: nextIndex,
-          lastFormatId: tweetFormats[expectedIndex].id,
-          lastTweetPreview: generatedTweet,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true },
-      );
-
-      return {
-        advancedFrom: currentIndex,
-        nextFormat: tweetFormats[nextIndex],
-        rotationShifted: currentIndex !== expectedIndex,
-        source: 'firebase',
-      };
-    });
-
-    return result;
-  } catch (error) {
-    console.warn(`Firebase rotation update unavailable, using local fallback: ${error.message}`);
-    return advanceLocalRotation(expectedIndex, generatedTweet);
-  }
-}
-
-async function getLocalRotationIndex() {
-  try {
-    const raw = await readFile(localRotationPath, 'utf8');
-    return normalizeRotationIndex(JSON.parse(raw).nextFormatIndex);
-  } catch {
-    return 0;
-  }
-}
-
-async function advanceLocalRotation(expectedIndex, generatedTweet) {
-  const currentIndex = await getLocalRotationIndex();
-  const nextIndex = (currentIndex + 1) % tweetFormats.length;
-
-  await mkdir(join(projectRoot, '.data'), { recursive: true });
-  await writeFile(
-    localRotationPath,
-    JSON.stringify(
-      {
-        nextFormatIndex: nextIndex,
-        lastFormatId: tweetFormats[expectedIndex].id,
-        lastTweetPreview: generatedTweet,
-        updatedAt: new Date().toISOString(),
-      },
-      null,
-      2,
-    ),
-  );
-
-  return {
-    advancedFrom: currentIndex,
-    nextFormat: tweetFormats[nextIndex],
-    rotationShifted: currentIndex !== expectedIndex,
-    source: 'local fallback',
-  };
-}
-
-function stripFormatLeakage(text) {
-  let cleaned = text.trim();
-
-  for (const label of bannedFormatLabels) {
-    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  for (const phrase of bannedPostLanguage) {
+    const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     cleaned = cleaned.replace(new RegExp(`^\\s*(?:\\*\\*)?${escaped}(?:\\*\\*)?\\s*[:\\-–—]?\\s*`, 'i'), '');
-    cleaned = cleaned.replace(new RegExp(`\\b${escaped}\\b\\s*[:\\-–—]?\\s*`, 'gi'), '');
   }
 
   return cleaned
@@ -288,29 +146,64 @@ export function assertTweetLength(tweet) {
   }
 }
 
+function extractJson(text) {
+  const raw = String(text || '').trim();
+
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (!match) {
+      throw new Error('OpenAI did not return a JSON post package.');
+    }
+    return JSON.parse(match[0]);
+  }
+}
+
+function normalizePostPackage(packageDraft) {
+  const text = cleanTweetText(packageDraft?.text || packageDraft?.tweet || '');
+  const imagePrompt = String(packageDraft?.imagePrompt || packageDraft?.image_prompt || '').trim();
+  const imageAlt = String(packageDraft?.imageAlt || packageDraft?.image_alt || '').trim();
+  const sourceType = String(packageDraft?.sourceType || packageDraft?.source_type || 'original devotional').trim();
+  const theme = String(packageDraft?.theme || '').trim();
+
+  if (!text) {
+    throw new Error('OpenAI returned an empty tweet.');
+  }
+
+  if (!imagePrompt) {
+    throw new Error('OpenAI returned an empty image prompt.');
+  }
+
+  assertTweetLength(text);
+
+  return {
+    text,
+    imagePrompt,
+    imageAlt: imageAlt || 'Sacred devotional artwork for the Ambro post.',
+    sourceType,
+    theme,
+  };
+}
+
 async function shortenTweet(tweet) {
   const response = await client.responses.create({
-    model: process.env.OPENAI_MODEL || 'gpt-5',
-    instructions: `Rewrite the post so it is fewer than 280 characters.
-Preserve the main idea, make it sound human, remove filler, and return only the final tweet text.
-Do not add a heading, format name, hashtags, emoji, or explanation.`,
+    model: openaiTextModel,
+    instructions: `Rewrite this devotional post so it is fewer than 280 characters.
+Keep it human, reverent, and clean. Remove filler. Return only the public text.`,
     input: `Current length: ${tweet.length}
 
 Post:
 ${tweet}`,
   });
 
-  const shortened = stripFormatLeakage(response.output_text?.trim() || '');
-
-  if (!shortened) {
-    throw new Error('OpenAI returned an empty shortened tweet.');
-  }
-
+  const shortened = cleanTweetText(response.output_text?.trim() || '');
+  assertTweetLength(shortened);
   return shortened;
 }
 
 async function enforceTweetLength(tweet) {
-  let finalTweet = stripFormatLeakage(tweet);
+  let finalTweet = cleanTweetText(tweet);
 
   for (let attempt = 0; attempt < 2 && finalTweet.length > maxTweetLength; attempt += 1) {
     finalTweet = await shortenTweet(finalTweet);
@@ -320,95 +213,194 @@ async function enforceTweetLength(tweet) {
   return finalTweet;
 }
 
-async function qualityCheckTweet({ tweet, format = null, editInstruction = '' }) {
-  const formatContext = format
-    ? `The private target structure was: ${format.guidance}`
-    : 'Preserve the apparent structure of the draft.';
-  const editContext = editInstruction ? `User edit request: ${editInstruction}` : '';
+export async function getRecentTweetLogs(count = 10) {
+  const snapshot = await getDocs(query(tweetLogCollection, orderBy('createdAt', 'desc'), limit(count)));
 
-  const response = await client.responses.create({
-    model: process.env.OPENAI_MODEL || 'gpt-5',
-    instructions: qualityCheckPrompt,
-    input: `${formatContext}
-${editContext}
-
-Draft:
-${tweet}
-
-Return the final cleaned post only. It must be fewer than 280 characters.`,
+  return snapshot.docs.map((entry) => {
+    const data = entry.data();
+    return {
+      id: entry.id,
+      tweet: data.tweet || data.text || '',
+      imagePrompt: data.imagePrompt || '',
+      imageAlt: data.imageAlt || '',
+      sourceType: data.sourceType || '',
+      theme: data.theme || '',
+      postedTweetId: data.postedTweetId || entry.id,
+      source: data.source || '',
+    };
   });
-
-  const checked = response.output_text?.trim();
-
-  if (!checked) {
-    throw new Error('OpenAI returned an empty checked tweet.');
-  }
-
-  return enforceTweetLength(checked);
 }
 
-export async function generateTweet({ context = '', currentTweet = '', editInstruction = '', format = null }) {
-  if (!client) {
-    throw new Error('Missing OPENAI_API_KEY. Add it to .env before creating AI tweets.');
+function buildRecentPostContext(recentPosts) {
+  if (!recentPosts.length) {
+    return 'No previous posted Ambro devotional image posts are logged yet.';
   }
 
-  const input = editInstruction
-    ? `Revise this Ambro post while preserving its original format and theological care.
+  return recentPosts
+    .map(
+      (post, index) => `${index + 1}. Text: ${post.tweet}
+Image idea: ${post.imagePrompt}
+Theme/source: ${[post.theme, post.sourceType].filter(Boolean).join(' / ') || 'unknown'}`,
+    )
+    .join('\n\n');
+}
 
-Current post:
+async function generateDevotionalPackageDraft({ context, recentPosts }) {
+  const response = await client.responses.create({
+    model: openaiTextModel,
+    instructions: devotionalSystemPrompt,
+    input: `Create one new Ambro devotional image post.
+
+Style references from high-performing examples:
+- short quote or prayer with lots of white space
+- saint/devotional Catholic tone
+- sacred oil-painting style image
+- emotionally direct: mercy, temptation, perseverance, Mary, the cross, family, prayer
+
+Optional direction from user:
+${context || 'No direction provided.'}
+
+Last 10 posted Ambro posts. The new one must be meaningfully different:
+${buildRecentPostContext(recentPosts)}
+
+Return JSON with exactly these keys:
+{
+  "text": "public tweet text under 280 characters",
+  "imagePrompt": "portrait-oriented sacred devotional oil painting prompt, no text in image",
+  "imageAlt": "short accessibility description",
+  "sourceType": "original prayer, original reflection, or verified saint quote",
+  "theme": "short theme label"
+}`,
+  });
+
+  return normalizePostPackage(extractJson(response.output_text));
+}
+
+async function qualityCheckDevotionalPackage({ postPackage, context, recentPosts }) {
+  const response = await client.responses.create({
+    model: openaiTextModel,
+    instructions: devotionalCheckerPrompt,
+    input: `Optional user direction:
+${context || 'No direction provided.'}
+
+Recent posts that must not be repeated:
+${buildRecentPostContext(recentPosts)}
+
+Draft package:
+${JSON.stringify(postPackage, null, 2)}
+
+Return corrected JSON with the same keys only.`,
+  });
+
+  const checked = normalizePostPackage(extractJson(response.output_text));
+  checked.text = await enforceTweetLength(checked.text);
+  return checked;
+}
+
+async function generateImage(imagePrompt) {
+  const imageParams = {
+    model: openaiImageModel,
+    prompt: `${imagePrompt}
+
+Important: no words, letters, captions, logos, watermarks, phone UI, social media UI, or app interface.
+Make it feel like old Catholic devotional artwork: painterly, reverent, textured, emotionally clear.`,
+    size: openaiImageSize,
+    quality: openaiImageQuality,
+    output_format: openaiImageFormat,
+    n: 1,
+  };
+
+  if (openaiImageFormat === 'jpeg' || openaiImageFormat === 'webp') {
+    imageParams.output_compression = openaiImageCompression;
+  }
+
+  const response = await client.images.generate(imageParams);
+
+  const base64 = response.data?.[0]?.b64_json;
+
+  if (!base64) {
+    throw new Error('OpenAI did not return image data.');
+  }
+
+  const buffer = Buffer.from(base64, 'base64');
+  const mimeType = `image/${openaiImageFormat === 'jpg' ? 'jpeg' : openaiImageFormat}`;
+
+  return {
+    base64,
+    buffer,
+    mimeType,
+    sizeBytes: buffer.length,
+    sha256: createHash('sha256').update(buffer).digest('hex'),
+    model: openaiImageModel,
+    size: openaiImageSize,
+    quality: openaiImageQuality,
+  };
+}
+
+export async function createDevotionalPostPackage(context = '') {
+  if (!client) {
+    throw new Error('Missing OPENAI_API_KEY. Add it to .env before creating AI posts.');
+  }
+
+  const recentPosts = await getRecentTweetLogs(10);
+  const draft = await generateDevotionalPackageDraft({ context, recentPosts });
+  const checked = await qualityCheckDevotionalPackage({ postPackage: draft, context, recentPosts });
+  const image = await generateImage(checked.imagePrompt);
+
+  return {
+    ...checked,
+    tweet: checked.text,
+    image,
+    recentPostCount: recentPosts.length,
+  };
+}
+
+export async function generateTweet({ currentTweet = '', editInstruction = '' }) {
+  if (!client) {
+    throw new Error('Missing OPENAI_API_KEY. Add it to .env before editing AI posts.');
+  }
+
+  const response = await client.responses.create({
+    model: openaiTextModel,
+    instructions: `Edit this Ambro devotional post. Keep it fewer than 280 characters.
+It must sound human, reverent, clean, and must not include hashtags, emoji, labels, headings, or format names.
+Return only the final public text.`,
+    input: `Current post:
 ${currentTweet}
 
 Edit request:
-${editInstruction}`
-    : `Create one Ambro post using this private structure:
-
-Private structure rules:
-${format.guidance}
-
-Reference example for tone only:
-${format.example}
-
-Do not include a heading, category label, title, format name, intro sentence, or explanation.
-Do not mention that you are following a format.
-
-Optional direction from user:
-${context || 'No direction provided.'}`;
-
-  const response = await client.responses.create({
-    model: process.env.OPENAI_MODEL || 'gpt-5',
-    instructions: tweetSystemPrompt,
-    input,
+${editInstruction}`,
   });
 
-  const text = await enforceTweetLength(response.output_text?.trim() || '');
-
-  if (!text) {
-    throw new Error('OpenAI returned an empty tweet.');
-  }
-
-  return qualityCheckTweet({ tweet: text, format, editInstruction });
+  return enforceTweetLength(response.output_text?.trim() || '');
 }
 
-function getTweetSegments(tweet) {
-  const text = tweet.trim();
-
-  if (!text) {
-    return [];
+function bufferFromMaybeBase64({ imageBuffer, imageBase64 }) {
+  if (Buffer.isBuffer(imageBuffer)) {
+    return imageBuffer;
   }
 
-  return [text];
+  if (imageBase64) {
+    return Buffer.from(imageBase64, 'base64');
+  }
+
+  return null;
 }
 
-export async function postToTwitter(tweet) {
-  const segments = getTweetSegments(tweet);
+export async function postToTwitter({
+  text,
+  imageBuffer = null,
+  imageBase64 = '',
+  imageMimeType = 'image/jpeg',
+  imageAlt = '',
+}) {
+  const tweet = cleanTweetText(text);
 
-  if (!segments.length) {
+  if (!tweet) {
     throw new Error('Nothing to post yet.');
   }
 
-  for (const segment of segments) {
-    assertTweetLength(segment);
-  }
+  assertTweetLength(tweet);
 
   if (!twitterClient) {
     throw new Error(
@@ -416,24 +408,37 @@ export async function postToTwitter(tweet) {
     );
   }
 
-  const postedTweets = [];
-  let replyToTweetId = null;
+  const payload = { text: tweet };
+  const mediaBuffer = bufferFromMaybeBase64({ imageBuffer, imageBase64 });
+  let mediaId = null;
 
-  for (const segment of segments) {
-    const payload = replyToTweetId
-      ? { text: segment, reply: { in_reply_to_tweet_id: replyToTweetId } }
-      : segment;
-    const response = await twitterClient.v2.tweet(payload);
-    const posted = response.data;
-
-    postedTweets.push({
-      id: posted.id,
-      text: posted.text,
-    });
-    replyToTweetId = posted.id;
+  if (!mediaBuffer) {
+    throw Object.assign(new Error('Create an image before posting.'), { code: 400 });
   }
 
-  return postedTweets;
+  mediaId = await twitterClient.v2.uploadMedia(mediaBuffer, {
+    media_type: imageMimeType,
+    media_category: 'tweet_image',
+  });
+
+  if (imageAlt) {
+    await twitterClient.v2.createMediaMetadata(mediaId, {
+      alt_text: { text: imageAlt.slice(0, 1000) },
+    });
+  }
+
+  payload.media = { media_ids: [mediaId] };
+
+  const response = await twitterClient.v2.tweet(payload);
+  const posted = response.data;
+
+  return [
+    {
+      id: posted.id,
+      text: posted.text,
+      mediaId,
+    },
+  ];
 }
 
 export async function getTwitterAccount() {
@@ -447,34 +452,23 @@ export async function getTwitterAccount() {
   return me.data;
 }
 
-export async function createTweetFromRotation(context = '') {
-  const { index, format } = await getCurrentFormat();
-  const tweet = await generateTweet({ context, format });
-  const rotation = await advanceFormat(index, tweet);
-
-  return {
-    tweet,
-    format,
-    nextFormat: rotation.nextFormat,
-    rotationSource: rotation.source,
-    rotationShifted: rotation.rotationShifted,
-  };
-}
-
 export async function createAndPostTweet(context = '') {
-  const draft = await createTweetFromRotation(context);
-  assertTweetLength(draft.tweet);
-  const postedTweets = await postToTwitter(draft.tweet);
+  const postPackage = await createDevotionalPostPackage(context);
+  const postedTweets = await postToTwitter({
+    text: postPackage.text,
+    imageBuffer: postPackage.image.buffer,
+    imageMimeType: postPackage.image.mimeType,
+    imageAlt: postPackage.imageAlt,
+  });
 
   await recordPostedTweet({
-    tweet: draft.tweet,
-    format: draft.format,
+    postPackage,
     postedTweets,
     source: 'automation',
   });
 
   return {
-    ...draft,
+    ...postPackage,
     postedTweets,
     status: 'posted',
     postedAt: new Date().toISOString(),
@@ -720,13 +714,25 @@ export async function recordScheduledFailure(slot, error) {
   );
 }
 
-export async function recordPostedTweet({ tweet, format, postedTweets, source }) {
+export async function recordPostedTweet({ postPackage, postedTweets, source }) {
+  const imageBuffer =
+    postPackage.image?.buffer ||
+    (postPackage.image?.base64 ? Buffer.from(postPackage.image.base64, 'base64') : null);
+  const imageSha256 =
+    postPackage.image?.sha256 || (imageBuffer ? createHash('sha256').update(imageBuffer).digest('hex') : null);
+
   await setDoc(
     doc(db, 'tweetLog', postedTweets[0].id),
     {
-      tweet,
-      formatId: format?.id || null,
-      formatName: format?.name || null,
+      tweet: postPackage.text || postPackage.tweet,
+      imagePrompt: postPackage.imagePrompt || '',
+      imageAlt: postPackage.imageAlt || '',
+      imageMimeType: postPackage.image?.mimeType || postPackage.imageMimeType || null,
+      imageSha256,
+      imageModel: postPackage.image?.model || openaiImageModel,
+      imageSize: postPackage.image?.size || openaiImageSize,
+      sourceType: postPackage.sourceType || null,
+      theme: postPackage.theme || null,
       postedTweetId: postedTweets[0].id,
       postedTweets,
       source,

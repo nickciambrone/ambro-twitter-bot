@@ -12,7 +12,7 @@ concurrency:
 jobs:
   post:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -32,6 +32,11 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           OPENAI_MODEL: ${{ secrets.OPENAI_MODEL || 'gpt-5' }}
+          OPENAI_IMAGE_MODEL: ${{ secrets.OPENAI_IMAGE_MODEL || 'gpt-image-1' }}
+          OPENAI_IMAGE_SIZE: ${{ secrets.OPENAI_IMAGE_SIZE || '1024x1536' }}
+          OPENAI_IMAGE_QUALITY: ${{ secrets.OPENAI_IMAGE_QUALITY || 'low' }}
+          OPENAI_IMAGE_FORMAT: ${{ secrets.OPENAI_IMAGE_FORMAT || 'jpeg' }}
+          OPENAI_IMAGE_COMPRESSION: ${{ secrets.OPENAI_IMAGE_COMPRESSION || 82 }}
           TWITTER_API_KEY: ${{ secrets.TWITTER_API_KEY }}
           TWITTER_API_SECRET: ${{ secrets.TWITTER_API_SECRET }}
           TWITTER_ACCESS_TOKEN: ${{ secrets.TWITTER_ACCESS_TOKEN }}
