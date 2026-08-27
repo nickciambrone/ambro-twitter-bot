@@ -203,17 +203,19 @@ input {
 .post-preview-frame {
   flex: 1;
   display: grid;
-  grid-template-rows: minmax(180px, 0.62fr) minmax(240px, 1fr);
+  grid-template-rows: minmax(170px, 0.48fr) minmax(260px, 1fr);
   gap: 16px;
   min-height: 0;
 }
 
 .tweet-preview {
-  min-height: 300px;
+  height: 100%;
+  min-height: 0;
   padding: 22px;
   font-family: Georgia, "Times New Roman", serif;
   font-size: 1.8rem;
   line-height: 1.28;
+  overflow: auto;
 }
 
 .image-preview-shell {
