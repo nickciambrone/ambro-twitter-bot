@@ -702,6 +702,50 @@ export async function reserveDueScheduledPost(now = new Date()) {
   });
 }
 
+export async function skipPastDueScheduledPosts(now = new Date()) {
+  const { dateKey, minuteOfDay } = getLocalDayParts(now);
+  const snapshot = await getDoc(schedulerRef);
+  const data = snapshot.exists() ? snapshot.data() : {};
+
+  if (data.dateKey !== dateKey || !Array.isArray(data.slots)) {
+    return {
+      dateKey,
+      skippedSlots: [],
+      reason: 'No schedule for today.',
+    };
+  }
+
+  const postedSlots = Array.isArray(data.postedSlots) ? data.postedSlots : [];
+  const failedSlots = Array.isArray(data.failedSlots) ? data.failedSlots : [];
+  const unavailableSlots = new Set([...postedSlots, ...failedSlots]);
+  const skippedSlots = data.slots.filter((slot) => slot <= minuteOfDay && !unavailableSlots.has(slot));
+
+  if (!skippedSlots.length) {
+    return {
+      dateKey,
+      skippedSlots: [],
+      reason: 'No past-due slots to skip.',
+    };
+  }
+
+  await setDoc(
+    schedulerRef,
+    {
+      failedSlots: arrayUnion(...skippedSlots),
+      lastSkippedSlots: skippedSlots,
+      lastError: 'Skipped past-due slots when local scheduler started in future-only mode.',
+      updatedAt: serverTimestamp(),
+    },
+    { merge: true },
+  );
+
+  return {
+    dateKey,
+    skippedSlots,
+    reason: 'Skipped past-due slots.',
+  };
+}
+
 export async function recordScheduledFailure(slot, error) {
   await setDoc(
     schedulerRef,
